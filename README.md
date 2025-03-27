@@ -8,8 +8,9 @@ Knowledge Vault MCP is a specialized MCP server that provides structured storage
 
 1. **Personal Context** 👤
    - Store personal information and preferences
-   - Example: "Stuart prefers TypeScript over JavaScript for large projects"
-   - Example: "Stuart's GitHub username is stuartmason"
+   - Example: "Users name is Stu Mason, he's 40 years old and lives in Folkestone, UK"
+   - Example: "Stu prefers TypeScript over JavaScript for large projects"
+   - Example: "Stu's GitHub username is `stumason`"
 
 2. **Project Knowledge** 📚
    - Maintain important project-specific information
@@ -79,6 +80,18 @@ npm run build
   - Organize content into categories
   - List all available topics
 
+- **Topic Relationships** 🔗
+  - Create relationships between topics
+  - Define relationship types (e.g., similar, alternative, complements)
+  - Specify relationship strengths
+  - View related topics and their connections
+
+- **Version History** 📜
+  - Track changes to topics over time
+  - Record who made each change
+  - Store change comments and timestamps
+  - View complete version history
+
 ## Usage Examples 💡
 
 ### Searching Content 🔍
@@ -95,6 +108,43 @@ mcp.search("AI tools and frameworks")
 mcp.lookUp("Next.js 15")
 ```
 
+### Managing Relationships 🔗
+
+```javascript
+// Create a relationship between topics
+mcp.createRelation({
+  sourceTopic: "TypeScript",
+  targetTopic: "JavaScript",
+  relationType: "similar",
+  strength: 0.8
+})
+
+// Find related topics
+mcp.getRelated({
+  topic: "TypeScript",
+  relationTypes: ["similar", "alternative"]
+})
+```
+
+### Tracking History 📜
+
+```javascript
+// Update a topic with history tracking
+mcp.update({
+  topic: "Project Conventions",
+  category: "Development",
+  content: "# Git Commit Standards\n\nWe use conventional commits...",
+  user: "stuart",
+  comment: "Updated commit standards"
+})
+
+// View topic history
+mcp.viewHistory({
+  topic: "Project Conventions",
+  limit: 10  // Show last 10 versions
+})
+```
+
 ### Updating Content ✏️
 
 ```javascript
@@ -109,6 +159,117 @@ mcp.update({
 ## Integration 🔌
 
 This Knowledge Vault is built on the Model Context Protocol (MCP), allowing seamless integration with AI models and applications that support the MCP standard. For more information about MCP, see the [MCP Specification](https://spec.modelcontextprotocol.io/).
+
+## Development Guide 🛠️
+
+### Adding New Tools
+
+To add a new tool to the Knowledge Vault, follow these steps:
+
+1. **Add Database Schema** (if needed):
+   ```sql
+   // In the initializeDb() function:
+   await db.exec(`
+     CREATE TABLE IF NOT EXISTS your_table (
+       id INTEGER PRIMARY KEY AUTOINCREMENT,
+       // ... other fields
+       FOREIGN KEY (...) REFERENCES ... (...)
+     );
+     
+     // Add any necessary indexes
+     CREATE INDEX IF NOT EXISTS idx_your_table_field ON your_table (field);
+   `);
+   ```
+
+2. **Register the Tool**:
+
+   ```typescript
+   server.tool(
+     "toolName",                    // Tool name
+     "Tool description...",         // Human-readable description
+     {
+       // Zod schema for parameters
+       param1: z.string().describe("Parameter description"),
+       param2: z.number().optional().describe("Optional parameter description")
+     },
+     async ({ param1, param2 }) => {
+       // Tool implementation
+       const result = await db.all(`
+         SELECT ... FROM ...
+         WHERE ... = ?
+       `, [param1]);
+       
+       return {
+         content: [{
+           type: "text",
+           text: `Formatted result...`
+         }]
+       };
+     }
+   );
+   ```
+
+3. **Update README**:
+   - Add tool to Features section
+   - Add usage example
+   - Update any relevant documentation
+
+### Tool Implementation Best Practices
+
+1. **Database Operations**:
+   - Use parameterized queries to prevent SQL injection
+   - Add appropriate indexes for query performance
+   - Handle foreign key relationships properly
+   - Consider adding constraints where appropriate
+
+2. **Error Handling**:
+   ```typescript
+   if (!result) {
+     return {
+       content: [{ 
+         type: "text", 
+         text: "Error message" 
+       }],
+       isError: true
+     };
+   }
+   ```
+
+3. **Response Formatting**:
+   - Use markdown for text responses
+   - Structure complex data clearly
+   - Include relevant metadata
+   - Consider adding timestamps for time-sensitive data
+
+4. **Parameter Validation**:
+   - Use Zod schemas for type safety
+   - Add descriptive parameter descriptions
+   - Make parameters optional when appropriate
+   - Set sensible default values
+
+### Testing New Tools
+
+1. Basic functionality:
+
+   ```typescript
+   // Create/update content
+   await toolName({
+     param1: "test value",
+     param2: 123
+   });
+   
+   // Verify results
+   const result = await verificationTool({
+     param: "test value"
+   });
+   ```
+
+2. Edge cases to consider:
+   - Empty/null values
+   - Invalid parameters
+   - Missing optional parameters
+   - Maximum value sizes
+   - Foreign key constraints
 
 ## Contributing 🤝
 
