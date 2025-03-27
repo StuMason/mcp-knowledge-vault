@@ -3,8 +3,8 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import sqlite3 from "sqlite3";
 import { open, Database } from "sqlite";
-import fs from 'fs';
-import { promisify } from 'util';
+import fetch from 'node-fetch';
+import * as cheerio from 'cheerio';
 
 // SQLite database path
 const DB_PATH = process.env.DB_PATH || "./knowledge.db";
@@ -279,6 +279,48 @@ server.tool(
   }
 );
 
+// Helper to find cross-references in content
+async function findCrossReferences(content: string): Promise<{name: string, confidence: number}[]> {
+  // Get all topics
+  const allTopics = await db.all("SELECT name FROM topics");
+  const topicNames = allTopics.map(t => t.name);
+  
+  // Sort by length (descending) to prioritize longer names
+  topicNames.sort((a, b) => b.length - a.length);
+  
+  // Find mentions
+  const mentions = new Map<string, number>();
+  
+  // First look for Markdown links
+  const markdownLinkRegex = /\[([^\]]+)\]\([^)]+\)/g;
+  let match;
+  while ((match = markdownLinkRegex.exec(content)) !== null) {
+    const linkText = match[1];
+    const exactMatch = topicNames.find(name => name.toLowerCase() === linkText.toLowerCase());
+    if (exactMatch) {
+      mentions.set(exactMatch, 1.0); // Explicit links get full confidence
+    }
+  }
+  
+  // Then look for plain text mentions
+  for (const name of topicNames) {
+    // Exact match with word boundaries
+    const exactRegex = new RegExp(`\\b${name}\\b`, 'gi');
+    if (exactRegex.test(content)) {
+      mentions.set(name, 0.9); // High confidence for exact matches
+      continue;
+    }
+    
+    // Fuzzy match for slight variations (simple implementation)
+    const fuzzyRegex = new RegExp(name.split('').join('\\s*'), 'gi');
+    if (fuzzyRegex.test(content)) {
+      mentions.set(name, 0.7); // Lower confidence for fuzzy matches
+    }
+  }
+  
+  return Array.from(mentions.entries()).map(([name, confidence]) => ({name, confidence}));
+}
+
 // Tool: update - add or update information about a topic
 server.tool(
   "update",
@@ -289,9 +331,10 @@ server.tool(
     contentType: z.string().default('markdown').optional().describe("Content type (e.g., 'markdown', 'html', 'text')"),
     category: z.string().optional().describe("Optional category to place the topic in"),
     user: z.string().optional().describe("User making the change"),
-    comment: z.string().optional().describe("Comment about the change")
+    comment: z.string().optional().describe("Comment about the change"),
+    detectReferences: z.boolean().default(true).optional().describe("Whether to automatically detect and create references to other topics")
   },
-  async ({ topic, content, contentType = 'markdown', category, user = 'system', comment }) => {
+  async ({ topic, content, contentType = 'markdown', category, user = 'system', comment, detectReferences = true }) => {
     const slug = topicToSlug(topic);
     let categoryId = null;
     
@@ -319,17 +362,21 @@ server.tool(
       [slug, categoryId]
     );
     
+    let topicId: number;
+    
     if (existingTopic) {
+      topicId = existingTopic.id;
+      
       // Add current content to history before updating
       await db.run(
         "INSERT INTO topic_history (topic_id, content, changed_by, change_comment) VALUES (?, ?, ?, ?)",
-        [existingTopic.id, existingTopic.content, user, comment || 'Update via API']
+        [topicId, existingTopic.content, user, comment || 'Update via API']
       );
       
       // Update existing topic
       await db.run(
         "UPDATE topics SET content = ?, content_type = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-        [content, contentType, existingTopic.id]
+        [content, contentType, topicId]
       );
     } else {
       // Create new topic
@@ -338,11 +385,45 @@ server.tool(
         [topic, slug, categoryId, content, contentType]
       );
       
+      if (!result.lastID) {
+        throw new Error("Failed to create new topic - no ID returned");
+      }
+      
+      topicId = result.lastID;
+      
       // Add initial version to history
       await db.run(
         "INSERT INTO topic_history (topic_id, content, changed_by, change_comment) VALUES (?, ?, ?, ?)",
-        [result.lastID, content, user, comment || 'Initial creation']
+        [topicId, content, user, comment || 'Initial creation']
       );
+    }
+    
+    // Handle cross-references if enabled
+    if (detectReferences) {
+      const mentions = await findCrossReferences(content);
+      
+      for (const {name, confidence} of mentions) {
+        const mentionedSlug = topicToSlug(name);
+        const mentionedTopic = await db.get("SELECT id FROM topics WHERE slug = ?", [mentionedSlug]);
+        
+        if (mentionedTopic && mentionedTopic.id !== topicId) {
+          // Create bidirectional reference relations with different strengths
+          await db.run(`
+            INSERT INTO topic_relations (source_id, target_id, relationship_type, relationship_strength)
+            VALUES (?, ?, 'references', ?)
+            ON CONFLICT (source_id, target_id, relationship_type) 
+            DO UPDATE SET relationship_strength = excluded.relationship_strength
+          `, [topicId, mentionedTopic.id, confidence]);
+          
+          // Create weaker reverse reference
+          await db.run(`
+            INSERT INTO topic_relations (source_id, target_id, relationship_type, relationship_strength)
+            VALUES (?, ?, 'referenced_by', ?)
+            ON CONFLICT (source_id, target_id, relationship_type) 
+            DO UPDATE SET relationship_strength = excluded.relationship_strength
+          `, [mentionedTopic.id, topicId, confidence * 0.7]);
+        }
+      }
     }
     
     return {
@@ -1142,6 +1223,343 @@ server.tool(
         }
       ]
     };
+  }
+);
+
+// Tool: importFromURL - import content from a URL
+server.tool(
+  "importFromURL",
+  "Import content from a URL into the knowledge vault.",
+  {
+    url: z.string().url().describe("The URL to import content from"),
+    topic: z.string().describe("The name of the topic to create or update"),
+    category: z.string().optional().describe("Optional category for the topic")
+  },
+  async ({ url, topic, category }) => {
+    try {
+      // Fetch the URL content
+      const response = await fetch(url);
+      if (!response.ok) {
+        return {
+          content: [{ type: "text", text: `Failed to fetch URL: ${response.statusText}` }],
+          isError: true
+        };
+      }
+      
+      const html = await response.text();
+      
+      // Parse HTML with cheerio
+      const $ = cheerio.load(html);
+      
+      // Extract key metadata
+      const title = $('title').text().trim() || topic;
+      const metaDescription = $('meta[name="description"]').attr('content')?.trim() || '';
+      const author = $('meta[name="author"]').attr('content')?.trim() || '';
+      const publishDate = $('meta[property="article:published_time"]').attr('content') || '';
+      
+      // Try to extract main content using common selectors
+      let mainContent = '';
+      const contentSelectors = [
+        'article',
+        'main',
+        '[role="main"]',
+        '.content',
+        '.post-content',
+        '.article-content',
+        '#content'
+      ];
+      
+      for (const selector of contentSelectors) {
+        const element = $(selector).first();
+        if (element.length) {
+          // Remove unwanted elements
+          element.find('script, style, nav, header, footer, .ads, .comments').remove();
+          mainContent = element.text().trim();
+          break;
+        }
+      }
+      
+      // If no main content found, try fallback to body
+      if (!mainContent) {
+        const body = $('body');
+        body.find('script, style, nav, header, footer, .ads, .comments').remove();
+        mainContent = body.text().trim();
+      }
+      
+      // Clean up the content
+      mainContent = mainContent
+        .replace(/\s+/g, ' ')
+        .replace(/\n\s*\n/g, '\n\n')
+        .trim();
+      
+      // Format as markdown with metadata
+      const markdown = `# ${title}
+
+${metaDescription}
+
+## Content
+
+${mainContent}
+
+## Metadata
+
+- **Source:** [${url}](${url})
+- **Author:** ${author || 'Not specified'}
+- **Published:** ${publishDate ? new Date(publishDate).toLocaleString() : 'Not specified'}
+- **Imported:** ${new Date().toISOString()}
+
+*This content was automatically imported from ${url}*`;
+
+      // Get or create category if specified
+      let categoryId = null;
+      if (category) {
+        const existingCategory = await db.get(
+          "SELECT id FROM categories WHERE name = ?", 
+          [category]
+        );
+        
+        if (existingCategory) {
+          categoryId = existingCategory.id;
+        } else {
+          const result = await db.run(
+            "INSERT INTO categories (name) VALUES (?)", 
+            [category]
+          );
+          categoryId = result.lastID;
+        }
+      }
+      
+      // Check if topic exists
+      const slug = topicToSlug(topic);
+      const existingTopic = await db.get(
+        "SELECT id, content FROM topics WHERE slug = ? AND category_id IS ?", 
+        [slug, categoryId]
+      );
+      
+      if (existingTopic) {
+        // Add current content to history
+        await db.run(
+          "INSERT INTO topic_history (topic_id, content, changed_by, change_comment) VALUES (?, ?, ?, ?)",
+          [existingTopic.id, existingTopic.content, 'system', `Updated from ${url}`]
+        );
+        
+        // Update existing topic
+        await db.run(
+          "UPDATE topics SET content = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+          [markdown, existingTopic.id]
+        );
+      } else {
+        // Create new topic
+        const result = await db.run(
+          "INSERT INTO topics (name, slug, category_id, content) VALUES (?, ?, ?, ?)",
+          [topic, slug, categoryId, markdown]
+        );
+        
+        // Add initial version to history
+        await db.run(
+          "INSERT INTO topic_history (topic_id, content, changed_by, change_comment) VALUES (?, ?, ?, ?)",
+          [result.lastID, markdown, 'system', `Initial import from ${url}`]
+        );
+      }
+      
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Successfully imported content from ${url} into topic "${topic}"${category ? ` in category "${category}"` : ""}`
+          }
+        ]
+      };
+      
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Failed to import content: ${error instanceof Error ? error.message : String(error)}`
+          }
+        ],
+        isError: true
+      };
+    }
+  }
+);
+
+// GitHub API types
+interface GitHubUser {
+  login: string;
+  html_url: string;
+}
+
+interface GitHubLicense {
+  name: string;
+}
+
+interface GitHubRepo {
+  name: string;
+  description: string | null;
+  owner: GitHubUser;
+  stargazers_count: number;
+  forks_count: number;
+  subscribers_count: number;
+  updated_at: string;
+  language: string | null;
+  license: GitHubLicense | null;
+  topics: string[];
+  open_issues_count: number;
+  size: number;
+  default_branch: string;
+  html_url: string;
+  homepage: string | null;
+  has_wiki: boolean;
+}
+
+interface GitHubReadme {
+  content: string;
+}
+
+// Tool: syncFromGitHub - sync GitHub repository information
+server.tool(
+  "syncFromGitHub",
+  "Sync information from a GitHub repository into the knowledge vault.",
+  {
+    repo: z.string().describe("GitHub repository in format 'owner/repo'"),
+    category: z.string().default("GitHub Projects").optional().describe("Category to store the information in"),
+    token: z.string().optional().describe("Optional GitHub personal access token for private repos")
+  },
+  async ({ repo, category = "GitHub Projects", token }) => {
+    try {
+      const headers: Record<string, string> = {
+        'Accept': 'application/vnd.github.v3+json',
+        'User-Agent': 'Knowledge-Vault-MCP'
+      };
+      
+      if (token) {
+        headers['Authorization'] = `token ${token}`;
+      }
+      
+      // Fetch repository information
+      const repoResponse = await fetch(`https://api.github.com/repos/${repo}`, { headers });
+      if (!repoResponse.ok) {
+        return {
+          content: [{ type: "text", text: `Failed to fetch repository: ${repoResponse.statusText}` }],
+          isError: true
+        };
+      }
+      
+      const repoData = await repoResponse.json() as GitHubRepo;
+      
+      // Fetch README
+      const readmeResponse = await fetch(`https://api.github.com/repos/${repo}/readme`, { headers });
+      let readmeContent = '';
+      
+      if (readmeResponse.ok) {
+        const readmeData = await readmeResponse.json() as GitHubReadme;
+        readmeContent = Buffer.from(readmeData.content, 'base64').toString('utf-8');
+      }
+      
+      // Format the content
+      const markdown = `# ${repoData.name}
+
+${repoData.description || ''}
+
+## Repository Information
+
+- **Owner:** [${repoData.owner.login}](${repoData.owner.html_url})
+- **Stars:** ${repoData.stargazers_count.toLocaleString()}
+- **Forks:** ${repoData.forks_count.toLocaleString()}
+- **Watchers:** ${repoData.subscribers_count.toLocaleString()}
+- **Last Updated:** ${new Date(repoData.updated_at).toLocaleString()}
+- **Language:** ${repoData.language || 'Not specified'}
+- **License:** ${repoData.license?.name || 'Not specified'}
+- **Topics:** ${repoData.topics?.join(', ') || 'None'}
+
+## Statistics
+
+- **Open Issues:** ${repoData.open_issues_count}
+- **Size:** ${(repoData.size / 1024).toFixed(2)} MB
+- **Default Branch:** \`${repoData.default_branch}\`
+
+## Links
+
+- **Repository:** [${repoData.html_url}](${repoData.html_url})
+- **Homepage:** ${repoData.homepage ? `[${repoData.homepage}](${repoData.homepage})` : 'Not specified'}
+- **Wiki:** ${repoData.has_wiki ? `[Wiki](${repoData.html_url}/wiki)` : 'Not enabled'}
+
+${readmeContent ? `## README\n\n${readmeContent}` : ''}
+
+*Last synced: ${new Date().toISOString()}*`;
+
+      // Get or create category
+      let categoryId = null;
+      const existingCategory = await db.get(
+        "SELECT id FROM categories WHERE name = ?", 
+        [category]
+      );
+      
+      if (existingCategory) {
+        categoryId = existingCategory.id;
+      } else {
+        const result = await db.run(
+          "INSERT INTO categories (name) VALUES (?)", 
+          [category]
+        );
+        categoryId = result.lastID;
+      }
+      
+      // Check if topic exists
+      const slug = topicToSlug(repoData.name);
+      const existingTopic = await db.get(
+        "SELECT id, content FROM topics WHERE slug = ? AND category_id IS ?", 
+        [slug, categoryId]
+      );
+      
+      if (existingTopic) {
+        // Add current content to history
+        await db.run(
+          "INSERT INTO topic_history (topic_id, content, changed_by, change_comment) VALUES (?, ?, ?, ?)",
+          [existingTopic.id, existingTopic.content, 'system', `Synced from GitHub`]
+        );
+        
+        // Update existing topic
+        await db.run(
+          "UPDATE topics SET content = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+          [markdown, existingTopic.id]
+        );
+      } else {
+        // Create new topic
+        const result = await db.run(
+          "INSERT INTO topics (name, slug, category_id, content) VALUES (?, ?, ?, ?)",
+          [repoData.name, slug, categoryId, markdown]
+        );
+        
+        // Add initial version to history
+        await db.run(
+          "INSERT INTO topic_history (topic_id, content, changed_by, change_comment) VALUES (?, ?, ?, ?)",
+          [result.lastID, markdown, 'system', `Initial sync from GitHub`]
+        );
+      }
+      
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Successfully synced information from ${repo} into the knowledge vault.`
+          }
+        ]
+      };
+      
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Failed to sync repository: ${error instanceof Error ? error.message : String(error)}`
+          }
+        ],
+        isError: true
+      };
+    }
   }
 );
 
