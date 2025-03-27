@@ -38,6 +38,7 @@ async function initializeDb() {
       category_id INTEGER,
       content TEXT NOT NULL,
       content_type TEXT DEFAULT 'markdown',
+      is_inactive BOOLEAN DEFAULT 0,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (category_id) REFERENCES categories (id),
@@ -439,12 +440,13 @@ server.tool(
 
 // Tool: list - list all available topics
 server.tool(
-  "list",
+  "listTopics",
   "List all available topics in the knowledge vault. Use this when you need to see a complete list of all topics or categories.",
   {
-    category: z.string().optional().describe("Optional category to list topics from")
+    category: z.string().optional().describe("Optional category to list topics from"),
+    includeInactive: z.boolean().default(false).optional().describe("Whether to include inactive topics in the listing")
   },
-  async ({ category }) => {
+  async ({ category, includeInactive = false }) => {
     interface ResultMap {
       [key: string]: string[];
     }
@@ -454,33 +456,42 @@ server.tool(
     if (category) {
       // List topics in specific category
       const topics = await db.all(`
-        SELECT t.name 
+        SELECT t.name, t.is_inactive
         FROM topics t
         JOIN categories c ON t.category_id = c.id
-        WHERE c.name = ?
+        WHERE c.name = ? ${!includeInactive ? 'AND t.is_inactive = 0' : ''}
         ORDER BY t.name
       `, [category]);
       
       if (topics.length > 0) {
-        results[category] = topics.map(t => t.name);
+        results[category] = topics.map(t => t.is_inactive ? `${t.name} (inactive)` : t.name);
       }
     } else {
       // List topics by category
       
       // First get uncategorized topics
       const uncategorizedTopics = await db.all(`
-        SELECT name FROM topics WHERE category_id IS NULL ORDER BY name
+        SELECT name, is_inactive 
+        FROM topics 
+        WHERE category_id IS NULL ${!includeInactive ? 'AND is_inactive = 0' : ''}
+        ORDER BY name
       `);
       
       if (uncategorizedTopics.length > 0) {
-        results["(No category)"] = uncategorizedTopics.map(t => t.name);
+        results["(No category)"] = uncategorizedTopics.map(t => 
+          t.is_inactive ? `${t.name} (inactive)` : t.name
+        );
       }
       
       // Then get topics by category
       const categories = await db.all(`
-        SELECT c.name as category_name, t.name as topic_name
+        SELECT 
+          c.name as category_name, 
+          t.name as topic_name,
+          t.is_inactive
         FROM topics t
         JOIN categories c ON t.category_id = c.id
+        ${!includeInactive ? 'WHERE t.is_inactive = 0' : ''}
         ORDER BY c.name, t.name
       `);
       
@@ -489,7 +500,9 @@ server.tool(
         if (!results[row.category_name]) {
           results[row.category_name] = [];
         }
-        results[row.category_name].push(row.topic_name);
+        results[row.category_name].push(
+          row.is_inactive ? `${row.topic_name} (inactive)` : row.topic_name
+        );
       }
     }
     
@@ -1560,6 +1573,155 @@ ${readmeContent ? `## README\n\n${readmeContent}` : ''}
         isError: true
       };
     }
+  }
+);
+
+// Tool: deleteTopic - permanently delete a topic
+server.tool(
+  "deleteTopic",
+  "Permanently delete a topic and all its associated data (attachments, relationships, history).",
+  {
+    topic: z.string().describe("The name of the topic to delete"),
+    confirm: z.boolean().describe("Confirmation flag to prevent accidental deletion")
+  },
+  async ({ topic, confirm }) => {
+    if (!confirm) {
+      return {
+        content: [{ 
+          type: "text", 
+          text: "Please set confirm=true to confirm topic deletion. This action cannot be undone." 
+        }],
+        isError: true
+      };
+    }
+
+    const slug = topicToSlug(topic);
+    
+    // Get topic ID
+    const topicResult = await db.get(
+      "SELECT id, name, category_id FROM topics WHERE slug = ?",
+      [slug]
+    );
+    
+    if (!topicResult) {
+      return {
+        content: [{ 
+          type: "text", 
+          text: `Topic "${topic}" not found.` 
+        }],
+        isError: true
+      };
+    }
+
+    // Start a transaction
+    await db.run('BEGIN TRANSACTION');
+
+    try {
+      // Delete attachments
+      await db.run(
+        "DELETE FROM attachments WHERE topic_id = ?",
+        [topicResult.id]
+      );
+
+      // Delete relationships
+      await db.run(
+        "DELETE FROM topic_relations WHERE source_id = ? OR target_id = ?",
+        [topicResult.id, topicResult.id]
+      );
+
+      // Delete history
+      await db.run(
+        "DELETE FROM topic_history WHERE topic_id = ?",
+        [topicResult.id]
+      );
+
+      // Delete the topic
+      await db.run(
+        "DELETE FROM topics WHERE id = ?",
+        [topicResult.id]
+      );
+
+      // Commit the transaction
+      await db.run('COMMIT');
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Successfully deleted topic "${topic}" and all associated data.`
+          }
+        ]
+      };
+    } catch (error) {
+      // Rollback on error
+      await db.run('ROLLBACK');
+      
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Failed to delete topic: ${error instanceof Error ? error.message : String(error)}`
+          }
+        ],
+        isError: true
+      };
+    }
+  }
+);
+
+// Tool: toggleTopicStatus - activate or inactivate a topic
+server.tool(
+  "toggleTopicStatus",
+  "Toggle a topic's active/inactive status. Inactive topics are hidden from normal operations but can be reactivated later.",
+  {
+    topic: z.string().describe("The name of the topic to toggle status"),
+    setInactive: z.boolean().describe("Whether to set the topic as inactive (true) or active (false)")
+  },
+  async ({ topic, setInactive }) => {
+    const slug = topicToSlug(topic);
+    
+    // Get topic current status
+    const topicResult = await db.get(
+      "SELECT id, name, is_inactive FROM topics WHERE slug = ?",
+      [slug]
+    );
+    
+    if (!topicResult) {
+      return {
+        content: [{ 
+          type: "text", 
+          text: `Topic "${topic}" not found.` 
+        }],
+        isError: true
+      };
+    }
+
+    // If status is already what we want, no need to update
+    if (!!topicResult.is_inactive === setInactive) {
+      const status = setInactive ? "inactive" : "active";
+      return {
+        content: [{ 
+          type: "text", 
+          text: `Topic "${topic}" is already ${status}.` 
+        }]
+      };
+    }
+
+    // Update the status
+    await db.run(
+      "UPDATE topics SET is_inactive = ? WHERE id = ?",
+      [setInactive ? 1 : 0, topicResult.id]
+    );
+
+    const newStatus = setInactive ? "inactive" : "active";
+    return {
+      content: [
+        {
+          type: "text",
+          text: `Successfully set topic "${topic}" as ${newStatus}.`
+        }
+      ]
+    };
   }
 );
 

@@ -37,7 +37,31 @@ npm install
 
 # Build the project
 npm run build
+
+# Initialize the database
+touch knowledge.db
+chmod 666 knowledge.db  # Set read/write permissions for the database file
 ```
+
+### Database Setup ⚙️
+
+The Knowledge Vault uses SQLite as its database engine, providing a lightweight and reliable storage solution. 
+
+If a database file doesn't exist at the specified `DB_PATH`, before running the server:
+
+1. Create the database file:
+
+   ```bash
+   touch knowledge.db
+   ```
+
+2. Set proper permissions:
+
+   ```bash
+   chmod 666 knowledge.db  # Allow read/write access
+   ```
+
+> ⚠️ **Important**: If you don't set the proper permissions, you'll get a "SQLITE_READONLY" error when trying to write to the database.
 
 ### Configuration 🛠️
 
@@ -58,8 +82,6 @@ npm run build
   }
 }
 ```
-
-The Knowledge Vault uses SQLite as its database engine, providing a lightweight and reliable storage solution. If a database file doesn't exist at the specified `DB_PATH`, one will be automatically created and initialized with the necessary schema when the server first starts.
 
 2. Restart your MCP-enabled application (like Claude Desktop) to load the new configuration.
 
@@ -86,6 +108,10 @@ The Knowledge Vault uses SQLite as its database engine, providing a lightweight 
   - Update existing content
   - Organize content into categories
   - List all available topics
+  - Delete topics permanently (with confirmation)
+  - Inactivate/reactivate topics for temporary removal
+  - Hide inactive topics by default
+  - Option to view both active and inactive topics
 
 - **Topic Relationships** 🔗
   - Create relationships between topics
@@ -134,21 +160,39 @@ mcp.search("AI tools and frameworks")
 mcp.lookUp("Next.js 15")
 ```
 
-### Managing Relationships 🔗
+### Managing Topics 📝
 
 ```javascript
-// Create a relationship between topics
-mcp.createRelation({
-  sourceTopic: "TypeScript",
-  targetTopic: "JavaScript",
-  relationType: "similar",
-  strength: 0.8
+// Create a new topic
+mcp.update({
+  topic: "Project Guidelines",
+  content: "Our development standards and practices..."
 })
 
-// Find related topics
-mcp.getRelated({
-  topic: "TypeScript",
-  relationTypes: ["similar", "alternative"]
+// Delete a topic (requires confirmation)
+mcp.deleteTopic({
+  topic: "Outdated Framework",
+  confirm: true  // Safety check to prevent accidental deletion
+})
+
+// Inactivate a topic (temporary removal)
+mcp.toggleTopicStatus({
+  topic: "Legacy API",
+  setInactive: true
+})
+
+// Reactivate a topic
+mcp.toggleTopicStatus({
+  topic: "Legacy API",
+  setInactive: false
+})
+
+// List only active topics (default)
+mcp.listTopics()
+
+// List all topics including inactive ones
+mcp.listTopics({
+  includeInactive: true  // Will show "(inactive)" next to inactive topics
 })
 ```
 
@@ -380,6 +424,28 @@ To add a new tool to the Knowledge Vault, follow these steps:
    - Missing optional parameters
    - Maximum value sizes
    - Foreign key constraints
+
+### Database Management
+
+When developing or testing new features:
+
+1. **Database Creation**:
+   ```bash
+   touch knowledge.db
+   chmod 666 knowledge.db
+   ```
+
+2. **Database Reset**:
+   ```bash
+   rm knowledge.db
+   touch knowledge.db
+   chmod 666 knowledge.db
+   ```
+
+3. **Common Issues**:
+   - If you get "SQLITE_READONLY" errors, check file permissions
+   - Use `ls -l knowledge.db` to verify permissions
+   - The database is automatically initialized with tables on first run
 
 ## Contributing 🤝
 
