@@ -1,10 +1,16 @@
 # Knowledge Vault MCP
 
-A powerful knowledge management system that allows AI models to store, retrieve, and manage information.
+A powerful knowledge management system that allows AI models to store, retrieve, and manage information through the Model Context Protocol (MCP).
 
 ## Overview
 
-Knowledge Vault MCP is a specialized MCP server that provides structured storage and retrieval of knowledge in a format that's easily accessible to both humans and AI models. It organizes information into categories and topics, making it simple to maintain and access a growing knowledge base.
+Knowledge Vault MCP is a specialized MCP server that provides structured storage and retrieval of knowledge in a format that's easily accessible to both humans and AI models. It serves three key purposes:
+
+1. **Personal Context**: Store personal information and preferences to provide AI models with user-specific context across different conversations
+2. **Project Knowledge**: Maintain important project-specific information that might not be immediately apparent from the codebase alone
+3. **Current Information**: Keep AI models up-to-date with information about new technologies, tools, and developments that have emerged after their training cutoff dates
+
+The system organizes information into categories and topics, making it simple to maintain and access a growing knowledge base.
 
 ## Features
 
