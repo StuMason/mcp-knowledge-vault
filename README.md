@@ -102,6 +102,15 @@ npm run build
   - Support for JSON and Markdown export formats
   - Import from JSON exports
   - Selective import with overwrite control
+  - Import content directly from URLs
+  - Sync GitHub repository information
+
+- **Automated Content Import** 🤖
+  - Import content from any webpage
+  - Extract main content and metadata
+  - Clean and format content automatically
+  - Sync GitHub repositories with README
+  - Track content sources and timestamps
 
 ## Usage Examples 💡
 
@@ -134,6 +143,24 @@ mcp.createRelation({
 mcp.getRelated({
   topic: "TypeScript",
   relationTypes: ["similar", "alternative"]
+})
+```
+
+### Importing Web Content 🌐
+
+```javascript
+// Import content from a webpage
+mcp.importFromURL({
+  url: "https://developer.mozilla.org/en-US/docs/Web/JavaScript",
+  topic: "JavaScript",
+  category: "Programming Languages"
+})
+
+// Sync GitHub repository information
+mcp.syncFromGitHub({
+  repo: "vercel/next.js",
+  category: "GitHub Projects",
+  token: "your-github-token" // Optional, for private repos
 })
 ```
 

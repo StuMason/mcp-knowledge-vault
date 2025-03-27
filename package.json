@@ -1,7 +1,7 @@
 {
   "name": "knowledge-vault",
   "version": "1.0.0",
-  "description": "Knowledge Vault MCP Server",
+  "description": "",
   "main": "build/index.js",
   "type": "module",
   "scripts": {
@@ -12,9 +12,10 @@
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "description": "",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.8.0",
+    "cheerio": "^1.0.0",
+    "node-fetch": "^3.3.2",
     "sqlite": "^5.1.1",
     "sqlite3": "^5.1.7",
     "zod": "^3.24.2"
