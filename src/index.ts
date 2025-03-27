@@ -37,6 +37,7 @@ async function initializeDb() {
       slug TEXT NOT NULL,
       category_id INTEGER,
       content TEXT NOT NULL,
+      content_type TEXT DEFAULT 'markdown',
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (category_id) REFERENCES categories (id),
@@ -45,6 +46,20 @@ async function initializeDb() {
 
     CREATE INDEX IF NOT EXISTS idx_topics_slug ON topics (slug);
     CREATE INDEX IF NOT EXISTS idx_topics_category ON topics (category_id);
+
+    CREATE TABLE IF NOT EXISTS attachments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      topic_id INTEGER NOT NULL,
+      file_name TEXT NOT NULL,
+      mime_type TEXT NOT NULL,
+      data BLOB NOT NULL,
+      description TEXT,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (topic_id) REFERENCES topics (id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_attachments_topic ON attachments (topic_id);
+    CREATE INDEX IF NOT EXISTS idx_attachments_mime ON attachments (mime_type);
 
     CREATE TABLE IF NOT EXISTS topic_relations (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -270,12 +285,13 @@ server.tool(
   "Add new information or update existing information about a topic in the knowledge vault. Use this to store important details about technologies, services, or concepts for future reference.",
   {
     topic: z.string().describe("The name of the topic to update"),
-    content: z.string().describe("The markdown content to store"),
+    content: z.string().describe("The content to store"),
+    contentType: z.string().default('markdown').optional().describe("Content type (e.g., 'markdown', 'html', 'text')"),
     category: z.string().optional().describe("Optional category to place the topic in"),
     user: z.string().optional().describe("User making the change"),
     comment: z.string().optional().describe("Comment about the change")
   },
-  async ({ topic, content, category, user = 'system', comment }) => {
+  async ({ topic, content, contentType = 'markdown', category, user = 'system', comment }) => {
     const slug = topicToSlug(topic);
     let categoryId = null;
     
@@ -299,7 +315,7 @@ server.tool(
     
     // Check if topic exists
     const existingTopic = await db.get(
-      "SELECT id, content FROM topics WHERE slug = ? AND category_id IS ?", 
+      "SELECT id, content, content_type FROM topics WHERE slug = ? AND category_id IS ?", 
       [slug, categoryId]
     );
     
@@ -312,14 +328,14 @@ server.tool(
       
       // Update existing topic
       await db.run(
-        "UPDATE topics SET content = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-        [content, existingTopic.id]
+        "UPDATE topics SET content = ?, content_type = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+        [content, contentType, existingTopic.id]
       );
     } else {
       // Create new topic
       const result = await db.run(
-        "INSERT INTO topics (name, slug, category_id, content) VALUES (?, ?, ?, ?)",
-        [topic, slug, categoryId, content]
+        "INSERT INTO topics (name, slug, category_id, content, content_type) VALUES (?, ?, ?, ?, ?)",
+        [topic, slug, categoryId, content, contentType]
       );
       
       // Add initial version to history
@@ -966,6 +982,166 @@ server.tool(
         isError: true
       };
     }
+  }
+);
+
+// Tool: addAttachment - add an attachment to a topic
+server.tool(
+  "addAttachment",
+  "Add an attachment (image, PDF, etc.) to a topic in the knowledge vault.",
+  {
+    topic: z.string().describe("The name of the topic to attach file to"),
+    fileName: z.string().describe("Name of the file to attach"),
+    mimeType: z.string().describe("MIME type of the file"),
+    filePath: z.string().describe("Path to the file to attach"),
+    description: z.string().optional().describe("Optional description of the attachment")
+  },
+  async ({ topic, fileName, mimeType, filePath, description }) => {
+    const slug = topicToSlug(topic);
+    
+    // Get topic ID
+    const topicResult = await db.get(
+      "SELECT id FROM topics WHERE slug = ?",
+      [slug]
+    );
+    
+    if (!topicResult) {
+      return {
+        content: [{ 
+          type: "text", 
+          text: `Topic "${topic}" not found.` 
+        }],
+        isError: true
+      };
+    }
+
+    try {
+      // Read the file
+      const fsPromises = await import('fs/promises');
+      const fileData = await fsPromises.readFile(filePath);
+      
+      // Add attachment
+      await db.run(
+        "INSERT INTO attachments (topic_id, file_name, mime_type, data, description) VALUES (?, ?, ?, ?, ?)",
+        [topicResult.id, fileName, mimeType, fileData, description]
+      );
+      
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Successfully attached "${fileName}" to topic "${topic}"`
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Failed to add attachment: ${error instanceof Error ? error.message : String(error)}`
+          }
+        ],
+        isError: true
+      };
+    }
+  }
+);
+
+// Tool: getAttachments - list attachments for a topic
+server.tool(
+  "getAttachments",
+  "List all attachments for a specific topic.",
+  {
+    topic: z.string().describe("The name of the topic to get attachments for")
+  },
+  async ({ topic }) => {
+    const slug = topicToSlug(topic);
+    
+    const attachments = await db.all(`
+      SELECT 
+        a.file_name,
+        a.mime_type,
+        a.description,
+        a.created_at,
+        LENGTH(a.data) as size
+      FROM attachments a
+      JOIN topics t ON a.topic_id = t.id
+      WHERE t.slug = ?
+      ORDER BY a.created_at DESC
+    `, [slug]);
+    
+    if (attachments.length === 0) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `No attachments found for topic "${topic}"`
+          }
+        ]
+      };
+    }
+    
+    const formattedAttachments = attachments.map(a => {
+      const timestamp = new Date(a.created_at).toLocaleString();
+      const sizeInKB = Math.round(a.size / 1024);
+      return `- **${a.file_name}** (${a.mime_type}, ${sizeInKB}KB)
+  Added: ${timestamp}
+  ${a.description ? `Description: ${a.description}` : ''}`;
+    }).join('\n\n');
+    
+    return {
+      content: [
+        {
+          type: "text",
+          text: `# Attachments for "${topic}"\n\n${formattedAttachments}`
+        }
+      ]
+    };
+  }
+);
+
+// Tool: getAttachment - retrieve a specific attachment
+server.tool(
+  "getAttachment",
+  "Retrieve a specific attachment from a topic. ⚠️ WARNING: This tool returns non-text content (binary data) and will not work through the MCP Client, which only supports text-based content. Consider using direct API calls or alternative methods to retrieve attachments.",
+  {
+    topic: z.string().describe("The name of the topic containing the attachment"),
+    fileName: z.string().describe("Name of the file to retrieve")
+  },
+  async ({ topic, fileName }) => {
+    const slug = topicToSlug(topic);
+    
+    const attachment = await db.get(`
+      SELECT 
+        a.data,
+        a.mime_type
+      FROM attachments a
+      JOIN topics t ON a.topic_id = t.id
+      WHERE t.slug = ? AND a.file_name = ?
+    `, [slug, fileName]);
+    
+    if (!attachment) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Attachment "${fileName}" not found in topic "${topic}"`
+          }
+        ],
+        isError: true
+      };
+    }
+    
+    return {
+      content: [
+        {
+          type: "image",
+          mimeType: attachment.mime_type,
+          data: attachment.data.toString('base64')
+        }
+      ]
+    };
   }
 );
 

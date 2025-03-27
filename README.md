@@ -73,6 +73,12 @@ npm run build
   - Category-specific searches
   - Semantic search support
 
+- **Multi-Modal Content Support** 📎
+  - Attach files to topics (images, PDFs, etc.)
+  - Store and manage binary attachments
+  - Associate descriptions with attachments
+  - Retrieve attachments by filename
+
 - **Easy Content Management** ✏️
   - Add new topics
   - Update existing content
@@ -200,6 +206,14 @@ mcp.update({
 ## Integration 🔌
 
 This Knowledge Vault is built on the Model Context Protocol (MCP), allowing seamless integration with AI models and applications that support the MCP standard. For more information about MCP, see the [MCP Specification](https://spec.modelcontextprotocol.io/).
+
+## Limitations ⚠️
+
+- **MCP Client Compatibility** 🚫
+  - The MCP Client currently only supports text-based content
+  - File attachments (`getAttachment` and `getAttachments`) will not work through the MCP Client
+  - Consider using direct API calls or alternative methods to retrieve attachments
+  - Text-based operations (topics, relationships, etc.) work normally
 
 ## Development Guide 🛠️
 
