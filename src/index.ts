@@ -279,6 +279,48 @@ server.tool(
   }
 );
 
+// Helper to find cross-references in content
+async function findCrossReferences(content: string): Promise<{name: string, confidence: number}[]> {
+  // Get all topics
+  const allTopics = await db.all("SELECT name FROM topics");
+  const topicNames = allTopics.map(t => t.name);
+  
+  // Sort by length (descending) to prioritize longer names
+  topicNames.sort((a, b) => b.length - a.length);
+  
+  // Find mentions
+  const mentions = new Map<string, number>();
+  
+  // First look for Markdown links
+  const markdownLinkRegex = /\[([^\]]+)\]\([^)]+\)/g;
+  let match;
+  while ((match = markdownLinkRegex.exec(content)) !== null) {
+    const linkText = match[1];
+    const exactMatch = topicNames.find(name => name.toLowerCase() === linkText.toLowerCase());
+    if (exactMatch) {
+      mentions.set(exactMatch, 1.0); // Explicit links get full confidence
+    }
+  }
+  
+  // Then look for plain text mentions
+  for (const name of topicNames) {
+    // Exact match with word boundaries
+    const exactRegex = new RegExp(`\\b${name}\\b`, 'gi');
+    if (exactRegex.test(content)) {
+      mentions.set(name, 0.9); // High confidence for exact matches
+      continue;
+    }
+    
+    // Fuzzy match for slight variations (simple implementation)
+    const fuzzyRegex = new RegExp(name.split('').join('\\s*'), 'gi');
+    if (fuzzyRegex.test(content)) {
+      mentions.set(name, 0.7); // Lower confidence for fuzzy matches
+    }
+  }
+  
+  return Array.from(mentions.entries()).map(([name, confidence]) => ({name, confidence}));
+}
+
 // Tool: update - add or update information about a topic
 server.tool(
   "update",
@@ -289,9 +331,10 @@ server.tool(
     contentType: z.string().default('markdown').optional().describe("Content type (e.g., 'markdown', 'html', 'text')"),
     category: z.string().optional().describe("Optional category to place the topic in"),
     user: z.string().optional().describe("User making the change"),
-    comment: z.string().optional().describe("Comment about the change")
+    comment: z.string().optional().describe("Comment about the change"),
+    detectReferences: z.boolean().default(true).optional().describe("Whether to automatically detect and create references to other topics")
   },
-  async ({ topic, content, contentType = 'markdown', category, user = 'system', comment }) => {
+  async ({ topic, content, contentType = 'markdown', category, user = 'system', comment, detectReferences = true }) => {
     const slug = topicToSlug(topic);
     let categoryId = null;
     
@@ -319,17 +362,21 @@ server.tool(
       [slug, categoryId]
     );
     
+    let topicId: number;
+    
     if (existingTopic) {
+      topicId = existingTopic.id;
+      
       // Add current content to history before updating
       await db.run(
         "INSERT INTO topic_history (topic_id, content, changed_by, change_comment) VALUES (?, ?, ?, ?)",
-        [existingTopic.id, existingTopic.content, user, comment || 'Update via API']
+        [topicId, existingTopic.content, user, comment || 'Update via API']
       );
       
       // Update existing topic
       await db.run(
         "UPDATE topics SET content = ?, content_type = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-        [content, contentType, existingTopic.id]
+        [content, contentType, topicId]
       );
     } else {
       // Create new topic
@@ -338,11 +385,45 @@ server.tool(
         [topic, slug, categoryId, content, contentType]
       );
       
+      if (!result.lastID) {
+        throw new Error("Failed to create new topic - no ID returned");
+      }
+      
+      topicId = result.lastID;
+      
       // Add initial version to history
       await db.run(
         "INSERT INTO topic_history (topic_id, content, changed_by, change_comment) VALUES (?, ?, ?, ?)",
-        [result.lastID, content, user, comment || 'Initial creation']
+        [topicId, content, user, comment || 'Initial creation']
       );
+    }
+    
+    // Handle cross-references if enabled
+    if (detectReferences) {
+      const mentions = await findCrossReferences(content);
+      
+      for (const {name, confidence} of mentions) {
+        const mentionedSlug = topicToSlug(name);
+        const mentionedTopic = await db.get("SELECT id FROM topics WHERE slug = ?", [mentionedSlug]);
+        
+        if (mentionedTopic && mentionedTopic.id !== topicId) {
+          // Create bidirectional reference relations with different strengths
+          await db.run(`
+            INSERT INTO topic_relations (source_id, target_id, relationship_type, relationship_strength)
+            VALUES (?, ?, 'references', ?)
+            ON CONFLICT (source_id, target_id, relationship_type) 
+            DO UPDATE SET relationship_strength = excluded.relationship_strength
+          `, [topicId, mentionedTopic.id, confidence]);
+          
+          // Create weaker reverse reference
+          await db.run(`
+            INSERT INTO topic_relations (source_id, target_id, relationship_type, relationship_strength)
+            VALUES (?, ?, 'referenced_by', ?)
+            ON CONFLICT (source_id, target_id, relationship_type) 
+            DO UPDATE SET relationship_strength = excluded.relationship_strength
+          `, [mentionedTopic.id, topicId, confidence * 0.7]);
+        }
+      }
     }
     
     return {

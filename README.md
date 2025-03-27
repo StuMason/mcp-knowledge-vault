@@ -90,6 +90,10 @@ npm run build
   - Define relationship types (e.g., similar, alternative, complements)
   - Specify relationship strengths
   - View related topics and their connections
+  - Automatic cross-reference detection in content
+  - Support for Markdown links and plain text mentions
+  - Intelligent confidence scoring (100% for links, 90% for exact matches, 70% for fuzzy matches)
+  - Bidirectional relationship creation with strength degradation
 
 - **Version History** 📜
   - Track changes to topics over time
@@ -143,6 +147,28 @@ mcp.createRelation({
 mcp.getRelated({
   topic: "TypeScript",
   relationTypes: ["similar", "alternative"]
+})
+```
+
+### Automatic Cross-References ✨
+
+```javascript
+// Topics with automatic reference detection
+mcp.update({
+  topic: "Next.js",
+  content: "Next.js supports both [TypeScript](/topics/typescript) and JavaScript.\nTypeScript is recommended for large projects.",
+  category: "Frameworks"
+})
+// This will create:
+// - 100% confidence reference to TypeScript (from Markdown link)
+// - 90% confidence reference to JavaScript (from exact text match)
+// - 70% confidence reverse references from both topics
+
+// Disable automatic reference detection
+mcp.update({
+  topic: "Programming Guide",
+  content: "Guide about TypeScript and JavaScript",
+  detectReferences: false  // No automatic references will be created
 })
 ```
 
