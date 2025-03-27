@@ -91,6 +91,12 @@ npm run build
   - Store change comments and timestamps
   - View complete version history
 
+- **Import/Export** 💾
+  - Export entire knowledge base or specific categories
+  - Support for JSON and Markdown export formats
+  - Import from JSON exports
+  - Selective import with overwrite control
+
 ## Usage Examples 💡
 
 ### Searching Content 🔍
@@ -122,6 +128,42 @@ mcp.createRelation({
 mcp.getRelated({
   topic: "TypeScript",
   relationTypes: ["similar", "alternative"]
+})
+```
+
+### Exporting and Importing 💾
+
+```javascript
+// Export entire knowledge base to JSON file
+mcp.exportVault({
+  format: "json",
+  exportPath: "/path/to/exports/knowledge.json"
+})
+
+// Export specific category to Markdown file
+mcp.exportVault({
+  format: "markdown",
+  category: "Development",
+  exportPath: "/path/to/exports/development.md"
+})
+
+// Export without saving to file (returns content directly)
+mcp.exportVault({
+  format: "json"
+})
+
+// Import from JSON file
+mcp.importVault({
+  importPath: "/path/to/exports/knowledge.json",
+  format: "json",
+  overwrite: false
+})
+
+// Import directly from data string
+mcp.importVault({
+  data: jsonString,
+  format: "json",
+  overwrite: false
 })
 ```
 

@@ -3,6 +3,8 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import sqlite3 from "sqlite3";
 import { open, Database } from "sqlite";
+import fs from 'fs';
+import { promisify } from 'util';
 
 // SQLite database path
 const DB_PATH = process.env.DB_PATH || "./knowledge.db";
@@ -70,6 +72,11 @@ async function initializeDb() {
 
     CREATE INDEX IF NOT EXISTS idx_topic_history_topic ON topic_history (topic_id);
     CREATE INDEX IF NOT EXISTS idx_topic_history_date ON topic_history (changed_at);
+
+    CREATE TABLE IF NOT EXISTS exports (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      path TEXT NOT NULL
+    );
   `);
 }
 
@@ -573,6 +580,392 @@ server.tool(
         }
       ]
     };
+  }
+);
+
+// Tool: exportVault - export the knowledge vault
+server.tool(
+  "exportVault",
+  "Export the entire knowledge vault or a specific category to a portable format.",
+  {
+    format: z.enum(["json", "markdown"]).default("json").describe("Export format"),
+    category: z.string().optional().describe("Optional category to export"),
+    exportPath: z.string().optional().describe("Optional file path to save the export. If not provided, returns content directly.")
+  },
+  async ({ format, category, exportPath }) => {
+    // First get topics
+    let topicSql = `
+      SELECT 
+        t.name as topic_name, 
+        t.slug as topic_slug,
+        t.content,
+        c.name as category_name
+      FROM topics t
+      LEFT JOIN categories c ON t.category_id = c.id
+    `;
+    
+    const params = [];
+    if (category) {
+      topicSql += " WHERE c.name = ?";
+      params.push(category);
+    }
+    
+    const topics = await db.all(topicSql, params);
+
+    // Then get relationships for these topics
+    const topicNames = topics.map(t => t.topic_name);
+    const relationsSql = `
+      SELECT 
+        t1.name as source_topic,
+        t2.name as target_topic,
+        tr.relationship_type as relation_type,
+        tr.relationship_strength as strength
+      FROM topic_relations tr
+      JOIN topics t1 ON tr.source_id = t1.id
+      JOIN topics t2 ON tr.target_id = t2.id
+      WHERE t1.name IN (${topicNames.map(() => '?').join(',')})
+      OR t2.name IN (${topicNames.map(() => '?').join(',')})
+    `;
+
+    const relations = await db.all(relationsSql, [...topicNames, ...topicNames]);
+    
+    if (format === "json") {
+      const exportData = {
+        format: "knowledgevault-export-v1",
+        date: new Date().toISOString(),
+        topics: topics.map(t => ({
+          name: t.topic_name,
+          slug: t.topic_slug,
+          category: t.category_name,
+          content: t.content
+        })),
+        relations: relations.map(r => ({
+          sourceTopic: r.source_topic,
+          targetTopic: r.target_topic,
+          relationType: r.relation_type,
+          strength: r.strength
+        }))
+      };
+      
+      const content = JSON.stringify(exportData, null, 2);
+      
+      if (exportPath) {
+        try {
+          const fsPromises = await import('fs/promises');
+          await fsPromises.mkdir(exportPath.split('/').slice(0, -1).join('/'), { recursive: true });
+          await fsPromises.writeFile(exportPath, content);
+          
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Export saved to: ${exportPath}`
+              }
+            ]
+          };
+        } catch (error) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Failed to save export to file: ${error instanceof Error ? error.message : String(error)}\n\nExport content:\n${content}`
+              }
+            ],
+            isError: true
+          };
+        }
+      }
+      
+      return {
+        content: [
+          {
+            type: "text",
+            text: content
+          }
+        ]
+      };
+    } else if (format === "markdown") {
+      // Group by category
+      const byCategory: Record<string, any[]> = {};
+      
+      for (const topic of topics) {
+        const cat = topic.category_name || "Uncategorized";
+        if (!byCategory[cat]) {
+          byCategory[cat] = [];
+        }
+        byCategory[cat].push(topic);
+      }
+      
+      // Create markdown content
+      let markdown = `# Knowledge Vault Export\n\nExported on ${new Date().toLocaleString()}\n\n`;
+      
+      // First output topics by category
+      for (const [cat, catTopics] of Object.entries(byCategory)) {
+        markdown += `## Category: ${cat}\n\n`;
+        
+        for (const topic of catTopics) {
+          markdown += `### ${topic.topic_name}\n\n${topic.content}\n\n---\n\n`;
+        }
+      }
+
+      // Then output relationships section if any exist
+      if (relations.length > 0) {
+        markdown += `## Topic Relationships\n\n`;
+        for (const rel of relations) {
+          markdown += `- ${rel.source_topic} → ${rel.target_topic} (${rel.relation_type}, strength: ${rel.strength})\n`;
+        }
+        markdown += '\n';
+      }
+      
+      if (exportPath) {
+        try {
+          const fsPromises = await import('fs/promises');
+          await fsPromises.mkdir(exportPath.split('/').slice(0, -1).join('/'), { recursive: true });
+          await fsPromises.writeFile(exportPath, markdown);
+          
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Export saved to: ${exportPath}`
+              }
+            ]
+          };
+        } catch (error) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Failed to save export to file: ${error instanceof Error ? error.message : String(error)}\n\nExport content:\n${markdown}`
+              }
+            ],
+            isError: true
+          };
+        }
+      }
+      
+      return {
+        content: [
+          {
+            type: "text",
+            text: markdown
+          }
+        ]
+      };
+    }
+    
+    return {
+      content: [
+        {
+          type: "text",
+          text: "Unsupported export format."
+        }
+      ],
+      isError: true
+    };
+  }
+);
+
+// Tool: importVault - import knowledge data
+server.tool(
+  "importVault",
+  "Import knowledge data from an exported format.",
+  {
+    data: z.string().optional().describe("The exported data to import"),
+    importPath: z.string().optional().describe("Optional file path to read the import data from"),
+    format: z.enum(["json"]).default("json").describe("Format of the import data"),
+    overwrite: z.boolean().default(false).optional().describe("Whether to overwrite existing topics")
+  },
+  async ({ data, importPath, format, overwrite = false }) => {
+    let importData;
+    
+    if (!data && !importPath) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: "Either data or importPath must be provided."
+          }
+        ],
+        isError: true
+      };
+    }
+
+    if (format !== "json") {
+      return {
+        content: [
+          {
+            type: "text",
+            text: "Currently only JSON format is supported for import."
+          }
+        ],
+        isError: true
+      };
+    }
+    
+    try {
+      if (importPath) {
+        try {
+          const fsPromises = await import('fs/promises');
+          data = await fsPromises.readFile(importPath, 'utf-8');
+        } catch (error) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Failed to read import file: ${error instanceof Error ? error.message : String(error)}`
+              }
+            ],
+            isError: true
+          };
+        }
+      }
+
+      if (!data) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: "No import data provided."
+            }
+          ],
+          isError: true
+        };
+      }
+      
+      importData = JSON.parse(data);
+      
+      if (importData.format !== "knowledgevault-export-v1") {
+        return {
+          content: [
+            {
+              type: "text",
+              text: "Invalid import format. Expected 'knowledgevault-export-v1'."
+            }
+          ],
+          isError: true
+        };
+      }
+      
+      let imported = 0;
+      let skipped = 0;
+      let relationsImported = 0;
+      let relationsSkipped = 0;
+      
+      // First import all topics to ensure they exist
+      for (const topic of importData.topics) {
+        const existingTopic = await db.get(
+          "SELECT id FROM topics WHERE slug = ?", 
+          [topic.slug]
+        );
+        
+        if (existingTopic && !overwrite) {
+          skipped++;
+          continue;
+        }
+        
+        // Get or create category
+        let categoryId = null;
+        if (topic.category) {
+          const category = await db.get(
+            "SELECT id FROM categories WHERE name = ?", 
+            [topic.category]
+          );
+          
+          if (category) {
+            categoryId = category.id;
+          } else {
+            const result = await db.run(
+              "INSERT INTO categories (name) VALUES (?)", 
+              [topic.category]
+            );
+            categoryId = result.lastID;
+          }
+        }
+        
+        if (existingTopic) {
+          // Update
+          await db.run(
+            "UPDATE topics SET name = ?, content = ?, category_id = ? WHERE id = ?",
+            [topic.name, topic.content, categoryId, existingTopic.id]
+          );
+        } else {
+          // Insert
+          await db.run(
+            "INSERT INTO topics (name, slug, category_id, content) VALUES (?, ?, ?, ?)",
+            [topic.name, topic.slug, categoryId, topic.content]
+          );
+        }
+        
+        imported++;
+      }
+
+      // Then import relationships if they exist
+      if (importData.relations && Array.isArray(importData.relations)) {
+        for (const relation of importData.relations) {
+          // Get topic IDs
+          const source = await db.get(
+            "SELECT id FROM topics WHERE name = ?",
+            [relation.sourceTopic]
+          );
+          const target = await db.get(
+            "SELECT id FROM topics WHERE name = ?",
+            [relation.targetTopic]
+          );
+
+          if (!source || !target) {
+            relationsSkipped++;
+            continue;
+          }
+
+          // Check if relation exists
+          const existingRelation = await db.get(
+            "SELECT id FROM topic_relations WHERE source_id = ? AND target_id = ? AND relationship_type = ?",
+            [source.id, target.id, relation.relationType]
+          );
+
+          if (existingRelation && !overwrite) {
+            relationsSkipped++;
+            continue;
+          }
+
+          if (existingRelation) {
+            // Update
+            await db.run(
+              "UPDATE topic_relations SET relationship_strength = ? WHERE id = ?",
+              [relation.strength, existingRelation.id]
+            );
+          } else {
+            // Insert
+            await db.run(
+              "INSERT INTO topic_relations (source_id, target_id, relationship_type, relationship_strength) VALUES (?, ?, ?, ?)",
+              [source.id, target.id, relation.relationType, relation.strength]
+            );
+          }
+
+          relationsImported++;
+        }
+      }
+      
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Import complete:\n- Topics: ${imported} imported, ${skipped} skipped\n- Relations: ${relationsImported} imported, ${relationsSkipped} skipped`
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Import failed: ${error instanceof Error ? error.message : String(error)}`
+          }
+        ],
+        isError: true
+      };
+    }
   }
 );
 

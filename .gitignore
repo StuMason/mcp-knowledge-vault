@@ -63,6 +63,8 @@ ehthumbs_vista.db
 [Dd]esktop.ini
 $RECYCLE.BIN/
 
+*.db
+
 # Linux
 *~
 .fuse_hidden*
@@ -77,4 +79,7 @@ logs
 # Cache directories
 .cache/
 .temp/
-.tmp/ 
+.tmp/
+
+# Database
+knowledge.db 
