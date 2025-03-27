@@ -10,7 +10,6 @@ Knowledge Vault MCP is a specialized MCP server that provides structured storage
    - Store personal information and preferences
    - Example: "Users name is Stu Mason, he's 40 years old and lives in Folkestone, UK"
    - Example: "Stu prefers TypeScript over JavaScript for large projects"
-   - Example: "Stu's GitHub username is `stumason`"
 
 2. **Project Knowledge** 📚
    - Maintain important project-specific information
@@ -20,7 +19,7 @@ Knowledge Vault MCP is a specialized MCP server that provides structured storage
 3. **Current Information** 🔄
    - Keep AI models up-to-date with post-training-cutoff information
    - Example: "Lovable.dev is a new AI-powered platform launched in 2024"
-   - Example: "Next.js 14 introduced the partial prerendering feature"
+   - Example: "Next.js 15 is the latest version and has the following breaking changes:..."
 
 The system organizes information into categories and topics, making it simple to maintain and access a growing knowledge base.
 
