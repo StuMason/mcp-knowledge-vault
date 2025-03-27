@@ -1,7 +1,7 @@
 {
   "name": "knowledge-vault",
   "version": "1.0.0",
-  "description": "",
+  "description": "A powerful knowledge management system for AI models using the Model Context Protocol (MCP). Store, retrieve, and manage information in a structured format that's easily accessible to both humans and AI models.",
   "main": "build/index.js",
   "type": "module",
   "scripts": {
@@ -9,8 +9,19 @@
     "start": "node build/index.js",
     "dev": "ts-node src/index.ts"
   },
-  "keywords": [],
-  "author": "",
+  "keywords": [
+    "knowledge-management",
+    "ai",
+    "mcp",
+    "model-context-protocol",
+    "knowledge-base",
+    "semantic-search",
+    "version-control",
+    "content-management",
+    "typescript",
+    "ai-assistant"
+  ],
+  "author": "Stu Mason <stu@stuartmason.co.uk>",
   "license": "ISC",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.8.0",
