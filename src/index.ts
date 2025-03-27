@@ -101,6 +101,7 @@ server.resource(
 // Tool: lookUp - retrieve info about a specific topic
 server.tool(
   "lookUp",
+  "Look up information about a specific topic or technology from the knowledge vault. Use this when you need details about a particular tool, service, or concept.",
   {
     topic: z.string().describe("The name of the topic to look up"),
     category: z.string().optional().describe("Optional category the topic belongs to")
@@ -154,6 +155,7 @@ server.tool(
 // Tool: search - find topics containing specific terms
 server.tool(
   "search",
+  "Search across all topics in the knowledge vault containing specific terms. Use this when you want to find information related to keywords or concepts.",
   {
     query: z.string().describe("Search terms to find in topics"),
     category: z.string().optional().describe("Optional category to search within")
@@ -231,6 +233,7 @@ server.tool(
 // Tool: update - add or update information about a topic
 server.tool(
   "update",
+  "Add new information or update existing information about a topic in the knowledge vault. Use this to store important details about technologies, services, or concepts for future reference.",
   {
     topic: z.string().describe("The name of the topic to update"),
     content: z.string().describe("The markdown content to store"),
@@ -292,6 +295,7 @@ server.tool(
 // Tool: list - list all available topics
 server.tool(
   "list",
+  "List all available topics in the knowledge vault. Use this when you need to see a complete list of all topics or categories.",
   {
     category: z.string().optional().describe("Optional category to list topics from")
   },
